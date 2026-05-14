@@ -17,7 +17,7 @@ on:
         required: true
         default: ""
 
-# WAJIB — tanpa ini release 403
+# WAJIB untuk create release
 permissions:
   contents: write
 
@@ -31,83 +31,88 @@ jobs:
 
     - name: SetUp environment
       run: |
-        PWD=$(pwd)
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc > /dev/null 2>&1
-        sudo -E apt-get -qq update > /dev/null 2>&1
-        sudo -E apt-get -y install wget python3 > /dev/null 2>&1
-        sudo -E apt-get -qq autoremove --purge > /dev/null 2>&1
-        sudo -E apt-get -qq clean > /dev/null 2>&1
-        sudo pip3 install gdown > /dev/null 2>&1
-        sudo pip3 install git+https://github.com/Juvenal-Yescas/mediafire-dl > /dev/null 2>&1
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1
+        sudo apt-get -qq update
+        sudo apt-get -y install wget python3 xz-utils gzip
+        sudo pip3 install gdown
+        sudo pip3 install git+https://github.com/Juvenal-Yescas/mediafire-dl
         wget https://mega.nz/linux/repo/xUbuntu_22.04/amd64/megacmd-xUbuntu_22.04_amd64.deb
-        sudo apt install "$PWD/megacmd-xUbuntu_22.04_amd64.deb" > /dev/null 2>&1
-        sudo mkdir -p openwrt > /dev/null 2>&1
+        sudo apt install ./megacmd-xUbuntu_22.04_amd64.deb
+
+        # JANGAN sudo
+        mkdir -p openwrt
 
     - name: Download Firmware
       run: |
-        if echo "${{ github.event.inputs.fw_link }}" | grep -q "drive."; then
-          if echo "${{ github.event.inputs.fw_link }}" | awk -F "/" '{print $6}' | grep -q .; then
-            link_gdrive=$(echo "${{ github.event.inputs.fw_link }}" | awk -F "/" '{print $6}')
-          else
-            link_gdrive=$(echo "${{ github.event.inputs.fw_link }}" | awk -F "/" '{print $4}' | awk -F "?id=" '{print $2}' | awk -F "&" '{print $1}')
-          fi
-          gdown "$link_gdrive" -O openwrt/$(basename "${{ github.event.inputs.fw_link }}")
-        elif echo "${{ github.event.inputs.fw_link }}" | grep -q "mediafire.com"; then
-          mediafire-dl "${{ github.event.inputs.fw_link }}" -o openwrt/$(basename "${{ github.event.inputs.fw_link }}")
-        elif echo "${{ github.event.inputs.fw_link }}" | grep -q "mega.nz"; then
-          file_mega=$(mega-get "${{ github.event.inputs.fw_link }}" | awk -F: '{print $2}')
-          mv "$file_mega" openwrt/$(basename "${{ github.event.inputs.fw_link }}")
+        LINK="${{ github.event.inputs.fw_link }}"
+        OUT="openwrt/$(basename "$LINK")"
+
+        if echo "$LINK" | grep -q "drive."; then
+          ID=$(echo "$LINK" | sed -n 's|.*id=\([^&]*\).*|\1|p')
+          [ -z "$ID" ] && ID=$(echo "$LINK" | awk -F/ '{print $6}')
+          gdown "$ID" -O "$OUT"
+
+        elif echo "$LINK" | grep -q "mediafire.com"; then
+          mediafire-dl "$LINK" -o "$OUT"
+
+        elif echo "$LINK" | grep -q "mega.nz"; then
+          FILE=$(mega-get "$LINK" | awk -F: '{print $2}')
+          mv "$FILE" "$OUT"
+
         else
-          wget --no-check-certificate "${{ github.event.inputs.fw_link }}" -O openwrt/$(basename "${{ github.event.inputs.fw_link }}")
+          wget --no-check-certificate "$LINK" -O "$OUT"
         fi
 
     - name: Get extension
       run: |
-        filename=$(find openwrt -name "*.img.*")
-        extension=$(basename "$filename" | sed -E 's/.*\.(img\.(gz|xz))$/\1/')
-        no_extension=$(basename "$filename" | sed -E 's/\.(gz|xz)$//')
-        echo "file_type=$extension" >> $GITHUB_ENV
-        echo "file_name=$no_extension" >> $GITHUB_ENV
+        FILE=$(find openwrt -name "*.img.*")
+        EXT=$(basename "$FILE" | sed -E 's/.*\.(img\.(gz|xz))$/\1/')
+        NAME=$(basename "$FILE" | sed -E 's/\.(gz|xz)$//')
+        echo "file_type=$EXT" >> $GITHUB_ENV
+        echo "file_name=$NAME" >> $GITHUB_ENV
 
     - name: Extract firmware
       run: |
         cd openwrt
         mkdir -p boot
-        mv ../BootCardMaker/u-boot.bin .
-        mv ../files/mod-boot-sdcard.tar.gz .
-        if [ "${{ env.file_type }}" = "img.gz" ]; then
-          gunzip "${{ env.file_name }}.gz"
-        else
-          unxz "${{ env.file_name }}.xz"
-        fi
-        device=$(losetup -fP --show "${{ env.file_name }}")
-        mount ${device}p1 boot
-        tar -xzf mod-boot-sdcard.tar.gz -C boot
 
-        uenv=$(grep APPEND boot/uEnv.txt | awk -F "root=" '{print $2}')
-        extlinux=$(grep append boot/extlinux/extlinux.conf | awk -F "root=" '{print $2}')
-        sed -i "s/$extlinux/$uenv/g" boot/extlinux/extlinux.conf
+        cp ../BootCardMaker/u-boot.bin .
+        cp ../files/mod-boot-sdcard.tar.gz .
+
+        if [ "$file_type" = "img.gz" ]; then
+          gunzip "$file_name.gz"
+        else
+          unxz "$file_name.xz"
+        fi
+
+        LOOP=$(sudo losetup -fP --show "$file_name")
+        sudo mount ${LOOP}p1 boot
+        sudo tar -xzf mod-boot-sdcard.tar.gz -C boot
+
+        UENV=$(grep APPEND boot/uEnv.txt | awk -F "root=" '{print $2}')
+        EXTROOT=$(grep append boot/extlinux/extlinux.conf | awk -F "root=" '{print $2}')
+        sudo sed -i "s/$EXTROOT/$UENV/g" boot/extlinux/extlinux.conf
 
         if [ "${{ github.event.inputs.bootloader }}" = "b860h" ]; then
-          dtb="meson-gxl-s905x-b860h.dtb"
+          DTB="meson-gxl-s905x-b860h.dtb"
         else
-          dtb="meson-gxl-s905x-p212.dtb"
+          DTB="meson-gxl-s905x-p212.dtb"
         fi
 
-        bootdtb=$(grep dtb boot/boot.ini | awk -F "/" '{print $4}' | tr -d '"')
-        sed -i "s/$bootdtb/$dtb/g" boot/boot.ini
-        sed -i "s/$bootdtb/$dtb/g" boot/extlinux/extlinux.conf
-        sed -i "s/$bootdtb/$dtb/g" boot/uEnv.txt
+        CURDTB=$(grep dtb boot/boot.ini | awk -F "/" '{print $4}' | tr -d '"')
+        sudo sed -i "s/$CURDTB/$DTB/g" boot/boot.ini
+        sudo sed -i "s/$CURDTB/$DTB/g" boot/extlinux/extlinux.conf
+        sudo sed -i "s/$CURDTB/$DTB/g" boot/uEnv.txt
 
-        umount ${device}p1
-        dd if=u-boot.bin of=${device} bs=1 count=444 conv=fsync
-        dd if=u-boot.bin of=${device} bs=512 skip=1 seek=1 conv=fsync
-        losetup -d ${device}
+        sudo umount boot
+        sudo dd if=u-boot.bin of=$LOOP bs=1 count=444 conv=fsync
+        sudo dd if=u-boot.bin of=$LOOP bs=512 skip=1 seek=1 conv=fsync
+        sudo losetup -d $LOOP
 
-        if [ "${{ env.file_type }}" = "img.gz" ]; then
-          gzip "${{ env.file_name }}"
+        if [ "$file_type" = "img.gz" ]; then
+          gzip "$file_name"
         else
-          xz "${{ env.file_name }}"
+          xz "$file_name"
         fi
 
     - name: Find Firmware
